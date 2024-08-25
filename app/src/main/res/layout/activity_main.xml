@@ -117,18 +117,6 @@
         android:textSize="16sp"
         android:visibility="gone" />
 
-    <Button
-        android:id="@+id/successButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Export Successful"
-        android:layout_centerInParent="true"
-        android:visibility="gone"
-        android:textColor="@android:color/white"
-        android:padding="12dp"
-        android:layout_marginTop="16dp" />
-
-
     <ImageButton
         android:id="@+id/gearButton"
         android:layout_width="wrap_content"

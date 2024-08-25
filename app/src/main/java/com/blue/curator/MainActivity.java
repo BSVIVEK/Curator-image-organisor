@@ -106,26 +106,101 @@ public class MainActivity extends AppCompatActivity {
         yesButton = findViewById(R.id.yesButton);
         noButton = findViewById(R.id.noButton);
         notSureButton = findViewById(R.id.notSureButton);
-
-        loadSavedState();
-        ImageButton nextButton = findViewById(R.id.nextButton);
-        ImageButton previousButton = findViewById(R.id.previousButton);
-        nextButton.setOnClickListener(v -> nextImage());
-        previousButton.setOnClickListener(v -> previousImage());
         selectedCountTextView = findViewById(R.id.selectedCountTextView);
 
+        // Initialize success button and hide it by default
         exportProgressBar = findViewById(R.id.exportProgressBar);
         exportProgressText = findViewById(R.id.exportProgressText);
-        successButton = findViewById(R.id.successButton); // Initialize success button
-        successButton.setVisibility(View.GONE);
-        successButton.setOnClickListener(v -> successButton.setVisibility(View.GONE)); // Hide button when clicked
+
+        // Set up gear button listener
         gearButton.setOnClickListener(v -> showVoiceRecognitionToggle());
 
+        // Display the selection dialog on app start
+        showSelectionDialog();
+    }
+
+    private void showSelectionDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Choose an option")
+                .setMessage("Select one of the following options:")
+                .setPositiveButton("View Selected Images", (dialog, which) -> {
+                    viewSelectedImages();
+                })
+                .setNegativeButton("Choose Directory and Get into Curator", (dialog, which) -> {
+                    chooseDirectoryAndContinue();
+                })
+                .setCancelable(false)
+                .show();
+    }
+
+    private void viewSelectedImages() {
+        initializeTextFiles();  // Ensure selectedFile is initialized
+        loadImagesFromCategory(selectedFile);
+
+        if (!categorizedYes.isEmpty()) {
+            currentIndex = 0;  // Start from the first image in the list
+            displaySelectedImage(currentIndex);  // Display the first selected image
+            setupImageNavigationForSelected();  // Setup previous/next navigation for selected images
+        } else {
+            showToast("No selected images to display.");
+        }
+    }
+
+    private void setupImageNavigationForSelected() {
+        ImageButton nextButton = findViewById(R.id.nextButton);
+        ImageButton previousButton = findViewById(R.id.previousButton);
+
+        nextButton.setOnClickListener(v -> nextSelectedImage());
+        previousButton.setOnClickListener(v -> previousSelectedImage());
+    }
+
+
+    private void displaySelectedImage(int index) {
+        Log.d(TAG, "displaySelectedImage called: index=" + index);
+        if (index >= 0 && index < categorizedYes.size()) {
+            Uri imageUri = Uri.parse(categorizedYes.get(index));
+            Glide.with(this)
+                    .load(imageUri)
+                    .thumbnail(0.1f)
+                    .transition(DrawableTransitionOptions.withCrossFade())
+                    .into(imageView);
+
+            showToast("Image " + (index + 1) + " of " + categorizedYes.size());
+            updateProgressTextViewForSelected();
+        }
+    }
+
+    private void nextSelectedImage() {
+        Log.d(TAG, "Next selected image requested");
+        if (currentIndex < categorizedYes.size() - 1) {
+            currentIndex++;
+            displaySelectedImage(currentIndex);
+        } else {
+            Log.d(TAG, "No more selected images");
+            showToast("No more images.");
+        }
+    }
+
+    private void previousSelectedImage() {
+        Log.d(TAG, "Previous selected image requested");
+        if (currentIndex > 0) {
+            currentIndex--;
+            displaySelectedImage(currentIndex);
+        } else {
+            Log.d(TAG, "Already at the first selected image");
+            showToast("Already at the first image.");
+        }
+    }
+
+    private void updateProgressTextViewForSelected() {
+        progressTextView.setText("Image " + (currentIndex + 1) + " of " + categorizedYes.size());
+    }
+
+
+    private void chooseDirectoryAndContinue() {
         if (directoryUri == null) {
             openDirectoryPicker();
         } else {
-            // Load images in the background to improve start time
-
             executorService.submit(() -> {
                 loadImagesFromDirectory(directoryUri);
                 runOnUiThread(() -> {
@@ -133,12 +208,29 @@ public class MainActivity extends AppCompatActivity {
                 });
             });
         }
-
         setupGestureDetection();
         setupVoiceRecognition();
-
-        // Set up button listeners
         setupButtonListeners();
+    }
+
+    private void loadImagesFromCategory(File categoryFile) {
+        if (categoryFile == null || !categoryFile.exists()) {
+            Log.e(TAG, "Category file is null or does not exist");
+            return;
+        }
+        categorizedYes.clear();  // Assuming you want to show only the "Yes" images
+        try {
+            List<String> lines = null;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                lines = java.nio.file.Files.readAllLines(categoryFile.toPath());
+            }
+            for (String line : lines) {
+                categorizedYes.add(line);
+            }
+            updateProgressTextView();  // Update UI to reflect the number of images loaded
+        } catch (IOException e) {
+            logErrorToFile(e);
+        }
     }
 
     private void showVoiceRecognitionToggle() {
@@ -148,7 +240,7 @@ public class MainActivity extends AppCompatActivity {
 
         final Switch toggleSwitch = new Switch(this);
         toggleSwitch.setChecked(isVoiceRecognitionEnabled);
-        toggleSwitch.setText("Enable Voice Recognition");
+        toggleSwitch.setText("  Enable Voice Recognition");
 
         builder.setView(toggleSwitch);
 
@@ -188,21 +280,33 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeTextFiles() {
+        // Initialize the file objects
         selectedFile = new File(getExternalFilesDir(null), "selected.txt");
         notSelectedFile = new File(getExternalFilesDir(null), "not_selected.txt");
         notSureFile = new File(getExternalFilesDir(null), "not_sure.txt");
 
-        if (!selectedFile.exists() || !notSelectedFile.exists() || !notSureFile.exists()) {
+        // Check if the file objects are properly initialized
+        if (selectedFile != null && notSelectedFile != null && notSureFile != null) {
             try {
-                selectedFile.createNewFile();
-                notSelectedFile.createNewFile();
-                notSureFile.createNewFile();
-                Log.d(TAG, "Text files created");
+                // Create the files if they don't exist
+                if (!selectedFile.exists()) {
+                    selectedFile.createNewFile();
+                }
+                if (!notSelectedFile.exists()) {
+                    notSelectedFile.createNewFile();
+                }
+                if (!notSureFile.exists()) {
+                    notSureFile.createNewFile();
+                }
+                Log.d(TAG, "Text files created or already exist");
             } catch (IOException e) {
                 logErrorToFile(e);
             }
+        } else {
+            Log.e(TAG, "Error initializing text files: One or more File objects are null");
         }
     }
+
 
     private void setStartingIndexFromTextFiles() {
         // Assume the latest file modified determines the last action
@@ -654,7 +758,6 @@ public class MainActivity extends AppCompatActivity {
             logCategorizedImages();  // Log the current categorization to the text files
 
             hideProgress();
-            showSuccessButton();
 
         } catch (Exception e) {
             logErrorToFile(e);
@@ -757,10 +860,6 @@ public class MainActivity extends AppCompatActivity {
         exportProgressText.setVisibility(View.GONE);
     }
 
-    private void showSuccessButton() {
-        runOnUiThread(() -> successButton.setVisibility(View.VISIBLE)); // Ensure this runs on the main thread
-    }
-
     private void logErrorToFile(Exception e) {
         Log.e(TAG, "Error logged: " + e.getMessage(), e);
         try {
@@ -807,6 +906,7 @@ public class MainActivity extends AppCompatActivity {
                     .putInt(PREF_LAST_IMAGE_INDEX, currentIndex)
                     .apply();
         } else {
+            Log.w(TAG, "Directory URI is null. Skipping state save.");
             logErrorToFile(new Exception("Directory URI is null in saveState"));
         }
     }
