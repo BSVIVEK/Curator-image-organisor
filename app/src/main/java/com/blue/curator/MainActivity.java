@@ -1,43 +1,57 @@
 package com.blue.curator;
 
-import static androidx.constraintlayout.helper.widget.MotionEffect.TAG;
-
+import android.Manifest;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.util.Log;
 import android.view.GestureDetector;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.ProgressBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
+    ExecutorService executorService = Executors.newSingleThreadExecutor();
     private static final int REQUEST_CODE_OPEN_DIRECTORY = 1;
     private static final String PREF_DIRECTORY_URI = "directoryUri";
     private static final String PREF_LAST_IMAGE_INDEX = "lastImageIndex";
+    private static final String TAG = "MainActivity";
 
     private Uri directoryUri;
     private List<DocumentFile> imageFiles = new ArrayList<>();
@@ -52,47 +66,197 @@ public class MainActivity extends AppCompatActivity {
     private GestureDetector gestureDetector;
     private SpeechRecognizer speechRecognizer;
     private TextView progressTextView;
-    private ImageButton micButton;
+//    private ImageButton micButton;
+
+    private File selectedFile;
+    private File notSelectedFile;
+    private File notSureFile;
+    private Handler handler = new Handler();
+    private Button yesButton;
+    private Button noButton;
+    private Button notSureButton;
+
+    private TextView selectedCountTextView;
+
+    private ProgressBar exportProgressBar;
+    private TextView exportProgressText;
+    private Button successButton;
+    private boolean isVoiceRecognitionEnabled = true; // Default to enabled
+    private ImageButton gearButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        getSupportActionBar().hide();
         setContentView(R.layout.activity_main);
-        Log.d(TAG, "onCreate called");
+
+        // Check for microphone permission
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 1);
+        }
 
         imageView = findViewById(R.id.imageView);
         toastMessage = findViewById(R.id.toastMessage);
         voiceProgressBar = findViewById(R.id.voiceProgressBar);
         progressTextView = findViewById(R.id.progressTextView);
-        micButton = findViewById(R.id.micButton);
+        gearButton = findViewById(R.id.gearButton);
+
+        // Initialize buttons
+        yesButton = findViewById(R.id.yesButton);
+        noButton = findViewById(R.id.noButton);
+        notSureButton = findViewById(R.id.notSureButton);
 
         loadSavedState();
+        ImageButton nextButton = findViewById(R.id.nextButton);
+        ImageButton previousButton = findViewById(R.id.previousButton);
+        nextButton.setOnClickListener(v -> nextImage());
+        previousButton.setOnClickListener(v -> previousImage());
+        selectedCountTextView = findViewById(R.id.selectedCountTextView);
+
+        exportProgressBar = findViewById(R.id.exportProgressBar);
+        exportProgressText = findViewById(R.id.exportProgressText);
+        successButton = findViewById(R.id.successButton); // Initialize success button
+        successButton.setVisibility(View.GONE);
+        successButton.setOnClickListener(v -> successButton.setVisibility(View.GONE)); // Hide button when clicked
+        gearButton.setOnClickListener(v -> showVoiceRecognitionToggle());
 
         if (directoryUri == null) {
             openDirectoryPicker();
         } else {
-            loadImagesFromDirectory(directoryUri);
-            displayImage(currentIndex);
+            // Load images in the background to improve start time
+
+            executorService.submit(() -> {
+                loadImagesFromDirectory(directoryUri);
+                runOnUiThread(() -> {
+                    displayImage(currentIndex);
+                });
+            });
         }
 
         setupGestureDetection();
         setupVoiceRecognition();
 
-        micButton.setOnClickListener(v -> {
-            Log.d(TAG, "Mic button clicked");
-            startVoiceRecognition();
+        // Set up button listeners
+        setupButtonListeners();
+    }
+
+    private void showVoiceRecognitionToggle() {
+        // Display a dialog with a toggle switch
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Voice Recognition");
+
+        final Switch toggleSwitch = new Switch(this);
+        toggleSwitch.setChecked(isVoiceRecognitionEnabled);
+        toggleSwitch.setText("Enable Voice Recognition");
+
+        builder.setView(toggleSwitch);
+
+        builder.setPositiveButton("OK", (dialog, which) -> {
+            isVoiceRecognitionEnabled = toggleSwitch.isChecked();
+            Toast.makeText(MainActivity.this, "Voice Recognition " + (isVoiceRecognitionEnabled ? "Enabled" : "Disabled"), Toast.LENGTH_SHORT).show();
         });
+
+        builder.setNegativeButton("Cancel", (dialog, which) -> dialog.dismiss());
+
+        builder.create().show();
+    }
+
+    private void updateSelectedCount() {
+        int selectedCount = categorizedYes.size();
+        selectedCountTextView.setText(selectedCount + "/300");
+    }
+
+    private void setupButtonListeners() {
+        yesButton.setOnClickListener(v -> {
+            Log.d("Button", "Yes button clicked");
+            categorizeImage("Yes");
+            showAcknowledgmentToast("Selected: Yes");
+        });
+
+        noButton.setOnClickListener(v -> {
+            Log.d("Button", "No button clicked");
+            categorizeImage("No");
+            showAcknowledgmentToast("Selected: No");
+        });
+
+        notSureButton.setOnClickListener(v -> {
+            Log.d("Button", "Not Sure button clicked");
+            categorizeImage("Not Sure");
+            showAcknowledgmentToast("Selected: Not Sure");
+        });
+    }
+
+    private void initializeTextFiles() {
+        selectedFile = new File(getExternalFilesDir(null), "selected.txt");
+        notSelectedFile = new File(getExternalFilesDir(null), "not_selected.txt");
+        notSureFile = new File(getExternalFilesDir(null), "not_sure.txt");
+
+        if (!selectedFile.exists() || !notSelectedFile.exists() || !notSureFile.exists()) {
+            try {
+                selectedFile.createNewFile();
+                notSelectedFile.createNewFile();
+                notSureFile.createNewFile();
+                Log.d(TAG, "Text files created");
+            } catch (IOException e) {
+                logErrorToFile(e);
+            }
+        }
+    }
+
+    private void setStartingIndexFromTextFiles() {
+        // Assume the latest file modified determines the last action
+        File latestFile = selectedFile;
+
+        if (notSelectedFile.lastModified() > latestFile.lastModified()) {
+            latestFile = notSelectedFile;
+        }
+        if (notSureFile.lastModified() > latestFile.lastModified()) {
+            latestFile = notSureFile;
+        }
+
+        // Determine the starting index based on the content of the latest file
+        try {
+            List<String> lines = null;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                lines = java.nio.file.Files.readAllLines(latestFile.toPath());
+            }
+            if (!lines.isEmpty()) {
+                String lastUri = lines.get(lines.size() - 1);
+                for (int i = 0; i < imageFiles.size(); i++) {
+                    if (imageFiles.get(i).getUri().toString().equals(lastUri)) {
+                        currentIndex = i;
+                        break;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            logErrorToFile(e);
+        }
+    }
+
+    private void showButtons() {
+        yesButton.setVisibility(View.VISIBLE);
+        noButton.setVisibility(View.VISIBLE);
+        notSureButton.setVisibility(View.VISIBLE);
+    }
+
+    private void hideButtons() {
+        yesButton.setVisibility(View.GONE);
+        noButton.setVisibility(View.GONE);
+        notSureButton.setVisibility(View.GONE);
     }
 
     private void startVoiceRecognition() {
         Log.d(TAG, "startVoiceRecognition called");
+        hideButtons();
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
         speechRecognizer.startListening(intent);
+
+        handler.postDelayed(this::showButtons, 10000);  // 10 seconds listening duration
     }
-
-
 
     private void loadSavedState() {
         Log.d(TAG, "loadSavedState called");
@@ -120,7 +284,9 @@ public class MainActivity extends AppCompatActivity {
             if (data != null) {
                 directoryUri = data.getData();
                 saveDirectoryUri(directoryUri);
+                initializeTextFiles(); // Create text files when the directory is first selected
                 loadImagesFromDirectory(directoryUri);
+                setStartingIndexFromTextFiles();
                 displayImage(currentIndex);
                 Log.d(TAG, "Directory selected: " + directoryUri);
             }
@@ -157,10 +323,25 @@ public class MainActivity extends AppCompatActivity {
                     .thumbnail(0.1f)
                     .transition(DrawableTransitionOptions.withCrossFade())
                     .into(imageView);
+
+            hideButtons(); // Hide buttons when displaying a new image
+
+            if (isVoiceRecognitionEnabled) {
+                handler.postDelayed(this::startVoiceRecognition, 3000);  // Delay 3 seconds before starting voice recognition
+            } else {
+                handler.postDelayed(this::showButtons, 3000);  // Delay 3 seconds before showing buttons
+            }
+
             preloadAdjacentImages(index);
             showToast("Image " + (index + 1) + " of " + imageFiles.size());
             updateProgressTextView();
         }
+    }
+
+    private void showAcknowledgmentToast(String message) {
+        Toast toast = Toast.makeText(this, message, Toast.LENGTH_SHORT);
+        toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, 100);
+        toast.show();
     }
 
     private void updateProgressTextView() {
@@ -174,15 +355,19 @@ public class MainActivity extends AppCompatActivity {
             Glide.with(this).load(imageFiles.get(index - 1).getUri()).preload();
         }
         if (index < imageFiles.size() - 1) {
-            Glide.with(this).load(imageFiles.get(index + 1).getUri()).preload();
+            Glide.with(this).load(imageFiles.get(index + 1).getUri()).preload(); // Preload next image
+        }
+        if (index < imageFiles.size() - 2) {
+            Glide.with(this).load(imageFiles.get(index + 2).getUri()).preload(); // Preload image after next
         }
     }
 
+
     private void showToast(String message) {
         Log.d(TAG, "showToast called: " + message);
-        toastMessage.setText(message);
-        toastMessage.setVisibility(TextView.VISIBLE);
-        toastMessage.postDelayed(() -> toastMessage.setVisibility(TextView.GONE), 2000);
+        Toast toast = Toast.makeText(this, message, Toast.LENGTH_SHORT);
+        toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, 100);
+        toast.show();
     }
 
     private void setupGestureDetection() {
@@ -301,12 +486,26 @@ public class MainActivity extends AppCompatActivity {
                     case SpeechRecognizer.ERROR_NO_MATCH:
                         message = "No match found. Please try again.";
                         break;
+                    case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                        message = "Insufficient permissions. Please allow microphone access.";
+                        break;
+                    case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+                        message = "Recognition service busy. Please try again.";
+                        break;
+                    case SpeechRecognizer.ERROR_SERVER:
+                        message = "Server error. Please try again later.";
+                        break;
+                    case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+                        message = "No speech input detected. Please try again.";
+                        break;
                     default:
                         message = "Error recognizing speech. Try again.";
                         break;
                 }
                 showToast(message);
+                logErrorToFile(new Exception("SpeechRecognizer error: " + message + " (Error code: " + error + ")"));
             }
+
 
             // Other RecognitionListener methods can be implemented as needed
             @Override
@@ -375,19 +574,61 @@ public class MainActivity extends AppCompatActivity {
     private void categorizeImage(String category) {
         Log.d(TAG, "Categorizing image as: " + category);
         DocumentFile file = imageFiles.get(currentIndex);
+        updateSelectedCount();  // Update count whenever an image is categorized
+        removePreviousSelection(file.getUri().toString());  // Remove previous selection
         switch (category) {
             case "Yes":
                 categorizedYes.add(file.getUri().toString());
+                writeToFile(selectedFile, file.getUri().toString());
                 break;
             case "No":
                 categorizedNo.add(file.getUri().toString());
+                writeToFile(notSelectedFile, file.getUri().toString());
                 break;
             case "Not Sure":
                 categorizedNotSure.add(file.getUri().toString());
+                writeToFile(notSureFile, file.getUri().toString());
                 break;
         }
         showToast("Image categorized as " + category);
         nextImage();
+    }
+
+    private void writeToFile(File file, String data) {
+        try {
+            FileWriter writer = new FileWriter(file, true);
+            writer.append(data).append("\n");
+            writer.close();
+            Log.d(TAG, "Data written to file: " + file.getName());
+        } catch (IOException e) {
+            logErrorToFile(e);
+        }
+    }
+
+    private void removeFromFile(File file, String data) {
+        try {
+            List<String> lines = null;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                lines = new ArrayList<>(java.nio.file.Files.readAllLines(file.toPath()));
+                lines.remove(data);
+                java.nio.file.Files.write(file.toPath(), lines);
+            }
+            Log.d(TAG, "Data removed from file: " + file.getName());
+        } catch (IOException e) {
+            logErrorToFile(e);
+        }
+    }
+
+    private void removePreviousSelection(String uri) {
+        Log.d(TAG, "Removing previous selection for URI: " + uri);
+        categorizedYes.remove(uri);
+        categorizedNo.remove(uri);
+        categorizedNotSure.remove(uri);
+
+        // Remove from files
+        removeFromFile(selectedFile, uri);
+        removeFromFile(notSelectedFile, uri);
+        removeFromFile(notSureFile, uri);
     }
 
     private void exitApp() {
@@ -397,19 +638,23 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void exportCategorizedImages() {
-        Log.d(TAG, "Exporting categorized images");
         try {
-            File exportDir = new File(getExternalFilesDir(null), "CategorizedImages");
-            if (!exportDir.exists()) {
-                exportDir.mkdirs();
-                Log.d(TAG, "Created directory: " + exportDir.getAbsolutePath());
-            }
+            List<String> allUris = new ArrayList<>();
+            allUris.addAll(categorizedYes);
+            allUris.addAll(categorizedNo);
+            allUris.addAll(categorizedNotSure);
 
-            moveFilesToDirectory(categorizedYes, new File(exportDir, "Yes"));
-            moveFilesToDirectory(categorizedNo, new File(exportDir, "No"));
-            moveFilesToDirectory(categorizedNotSure, new File(exportDir, "NotSure"));
+            int totalFiles = allUris.size();
+            showProgress(totalFiles);
 
-            logCategorizedImages();
+            moveFilesToDirectory(categorizedYes, new File(getExternalFilesDir(null), "Yes"), totalFiles);
+            moveFilesToDirectory(categorizedNo, new File(getExternalFilesDir(null), "No"), totalFiles);
+            moveFilesToDirectory(categorizedNotSure, new File(getExternalFilesDir(null), "NotSure"), totalFiles);
+
+            logCategorizedImages();  // Log the current categorization to the text files
+
+            hideProgress();
+            showSuccessButton();
 
         } catch (Exception e) {
             logErrorToFile(e);
@@ -417,20 +662,65 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void moveFilesToDirectory(List<String> uris, File directory) {
+
+//    private void moveFilesToDirectory(List<String> uris, File directory) {
+//        Log.d(TAG, "Moving files to directory: " + directory.getAbsolutePath());
+//        if (!directory.exists()) {
+//            directory.mkdirs();
+//        }
+//
+//        for (String uriString : uris) {
+//            Uri uri = Uri.parse(uriString);
+//            DocumentFile file = DocumentFile.fromSingleUri(this, uri);
+//            if (file != null) {
+//                File destination = new File(directory, file.getName());
+//                // Implement the actual file moving/copying logic here
+//                Log.d(TAG, "File moved to: " + destination.getAbsolutePath());
+//                // You might need to use InputStream/OutputStream to copy the files.
+//            }
+//        }
+//    }
+
+    private void moveFilesToDirectory(List<String> uris, File directory, int totalFiles) {
         Log.d(TAG, "Moving files to directory: " + directory.getAbsolutePath());
         if (!directory.exists()) {
-            directory.mkdirs();
+            directory.mkdirs(); // Ensure the directory exists
         }
 
+        int currentFile = 0;
         for (String uriString : uris) {
+            currentFile++;
+            updateProgress(currentFile, totalFiles);
+
             Uri uri = Uri.parse(uriString);
             DocumentFile file = DocumentFile.fromSingleUri(this, uri);
             if (file != null) {
                 File destination = new File(directory, file.getName());
-                // Implement the actual file moving/copying logic here
-                Log.d(TAG, "File moved to: " + destination.getAbsolutePath());
-                // You might need to use InputStream/OutputStream to copy the files.
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     OutputStream out = new FileOutputStream(destination)) {
+
+                    // Copy the file content from source to destination
+                    byte[] buffer = new byte[1024];
+                    int length;
+                    while ((length = in.read(buffer)) > 0) {
+                        out.write(buffer, 0, length);
+                    }
+
+                    Log.d(TAG, "File moved to: " + destination.getAbsolutePath());
+
+                    // Optionally, delete the source file after copying
+                    if (file.delete()) {
+                        Log.d(TAG, "Source file deleted: " + uriString);
+                    } else {
+                        Log.e(TAG, "Failed to delete source file: " + uriString);
+                    }
+
+                } catch (IOException e) {
+                    logErrorToFile(e);
+                    Log.e(TAG, "Error moving file: " + uriString, e);
+                }
+            } else {
+                Log.e(TAG, "DocumentFile is null for URI: " + uriString);
             }
         }
     }
@@ -450,10 +740,43 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void showProgress(int totalFiles) {
+        exportProgressBar.setMax(totalFiles);
+        exportProgressBar.setProgress(0);
+        exportProgressBar.setVisibility(View.VISIBLE);
+        exportProgressText.setVisibility(View.VISIBLE);
+    }
+
+    private void updateProgress(int currentFile, int totalFiles) {
+        exportProgressBar.setProgress(currentFile);
+        exportProgressText.setText(currentFile + "/" + totalFiles);
+    }
+
+    private void hideProgress() {
+        exportProgressBar.setVisibility(View.GONE);
+        exportProgressText.setVisibility(View.GONE);
+    }
+
+    private void showSuccessButton() {
+        runOnUiThread(() -> successButton.setVisibility(View.VISIBLE)); // Ensure this runs on the main thread
+    }
+
     private void logErrorToFile(Exception e) {
         Log.e(TAG, "Error logged: " + e.getMessage(), e);
         try {
-            File logFile = new File(getExternalFilesDir(null), "ErrorLog.txt");
+            File logDir = getExternalFilesDir(null);
+            if (logDir != null && !logDir.exists()) {
+                logDir.mkdirs(); // Ensure the directory exists
+            }
+
+            File logFile = new File(logDir, "ErrorLog.txt");
+
+            // Limit log file size (e.g., 1MB)
+            if (logFile.length() > 1024 * 1024) {
+                logFile.delete(); // Delete if it exceeds 1MB
+                logFile.createNewFile(); // Create a new log file
+            }
+
             FileWriter writer = new FileWriter(logFile, true);
             writer.append(e.getMessage()).append("\n");
             for (StackTraceElement element : e.getStackTrace()) {
@@ -463,15 +786,16 @@ public class MainActivity extends AppCompatActivity {
             Log.d(TAG, "Error logged to file successfully");
         } catch (IOException ioException) {
             Log.e(TAG, "Failed to log error to file", ioException);
-            ioException.printStackTrace();
         }
     }
+
 
     @Override
     protected void onPause() {
         super.onPause();
         Log.d(TAG, "onPause called");
         saveState();
+        exportCategorizedImages();
     }
 
     private void saveState() {
@@ -482,7 +806,6 @@ public class MainActivity extends AppCompatActivity {
                     .putString(PREF_DIRECTORY_URI, directoryUri.toString())
                     .putInt(PREF_LAST_IMAGE_INDEX, currentIndex)
                     .apply();
-            exportCategorizedImages();  // Export images on exit or pause
         } else {
             logErrorToFile(new Exception("Directory URI is null in saveState"));
         }
@@ -491,13 +814,30 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        exportCategorizedImages();  // Ensure files are saved when the app is destroyed
         // Check if activity is finishing or destroyed before trying to clear Glide
         Log.d(TAG, "onDestroy called");
         if (speechRecognizer != null) {
             speechRecognizer.destroy();
         }
-        if (imageView != null && !isFinishing() && !isDestroyed()) {
+        if (!executorService.isShutdown()) {
+            executorService.shutdown();
+        }
+        if (!isFinishing() && !isDestroyed()) {
             Glide.with(this).clear(imageView);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                // Permission granted, proceed with voice recognition
+            } else {
+                // Permission denied, notify the user
+                showToast("Microphone permission is required for voice recognition");
+            }
         }
     }
 
