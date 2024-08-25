@@ -709,11 +709,11 @@ public class MainActivity extends AppCompatActivity {
                     Log.d(TAG, "File moved to: " + destination.getAbsolutePath());
 
                     // Optionally, delete the source file after copying
-                    if (file.delete()) {
-                        Log.d(TAG, "Source file deleted: " + uriString);
-                    } else {
-                        Log.e(TAG, "Failed to delete source file: " + uriString);
-                    }
+//                    if (file.delete()) {
+//                        Log.d(TAG, "Source file deleted: " + uriString);
+//                    } else {
+//                        Log.e(TAG, "Failed to delete source file: " + uriString);
+//                    }
 
                 } catch (IOException e) {
                     logErrorToFile(e);
